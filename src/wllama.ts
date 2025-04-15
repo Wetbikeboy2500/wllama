@@ -3,6 +3,7 @@ import {
   GlueMsgChatFormatRes,
   GlueMsgDecodeRes,
   GlueMsgDetokenizeRes,
+  GlueMsgEncodeRes,
   GlueMsgGetEmbeddingsRes,
   GlueMsgGetKvClearRes,
   GlueMsgGetKvRemoveRes,
@@ -1127,8 +1128,7 @@ export class Wllama {
       if (options?.abortSignal?.aborted) {
         throw new WllamaAbortError();
       }
-      //TOOD: fix respone type
-      result = await this.proxy.wllamaAction<GlueMsgDecodeRes>('encode', {
+      result = await this.proxy.wllamaAction<GlueMsgEncodeRes>('encode', {
         _name: 'enco_req',
         tokens: batches[i],
       });
