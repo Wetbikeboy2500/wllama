@@ -1,16 +1,4 @@
-import { ProxyToWorker } from './worker';
-import {
-  absoluteUrl,
-  bufToText,
-  cbToAsyncIter,
-  checkEnvironmentCompatible,
-  isString,
-  isSupportMultiThread,
-  joinBuffers,
-  sortFileByShard,
-} from './utils';
 import CacheManager, { DownloadOptions } from './cache-manager';
-import { ModelManager, Model } from './model-manager';
 import {
   GlueMsgChatFormatRes,
   GlueMsgDecodeRes,
@@ -30,6 +18,109 @@ import {
   GlueMsgTestPerplexityRes,
   GlueMsgTokenizeRes,
 } from './glue/messages';
+import { Model, ModelManager } from './model-manager';
+import {
+  absoluteUrl,
+  bufToText,
+  cbToAsyncIter,
+  checkEnvironmentCompatible,
+  isString,
+  isSupportMultiThread,
+  joinBuffers,
+  sortFileByShard,
+} from './utils';
+import { ProxyToWorker } from './worker';
+
+interface MetricStats {
+  current: number;
+  mean: number;
+  stdDev: number;
+  min: number;
+  max: number;
+  margin: number;  // 95% confidence interval
+  sampleSize: number;
+}
+
+export class SlidingWindowMetrics {
+  private window: number[] = [];
+  private windowSize: number;
+  private confidenceLevel: number = 1.96; // 95% confidence interval
+  
+  constructor(windowSize: number = 32) {
+    this.windowSize = windowSize;
+  }
+
+  private calculateStats(): MetricStats {
+    const n = this.window.length;
+    if (n === 0) {
+      return {
+        current: 0,
+        mean: 0,
+        stdDev: 0,
+        min: 0,
+        max: 0,
+        margin: 0,
+        sampleSize: 0
+      };
+    }
+
+    const current = this.window[this.window.length - 1];
+    const sum = this.window.reduce((a, b) => a + b, 0);
+    const mean = sum / n;
+    
+    // Calculate standard deviation
+    const squareDiffs = this.window.map(value => {
+      const diff = value - mean;
+      return diff * diff;
+    });
+    const variance = squareDiffs.reduce((a, b) => a + b, 0) / (n - 1);
+    const stdDev = Math.sqrt(variance);
+    
+    // Calculate margin of error (95% confidence interval)
+    const margin = (this.confidenceLevel * stdDev) / Math.sqrt(n);
+
+    return {
+      current,
+      mean,
+      stdDev,
+      min: Math.min(...this.window),
+      max: Math.max(...this.window),
+      margin,
+      sampleSize: n
+    };
+  }
+
+  addMetric(value: number): MetricStats {
+    this.window.push(value);
+    if (this.window.length > this.windowSize) {
+      this.window.shift();
+    }
+    
+    return this.calculateStats();
+  }
+}
+
+export class PerformanceTracker {
+  private metrics: Map<string, SlidingWindowMetrics> = new Map();
+  
+  track(name: string, value: number, windowSize: number = 32) {
+    if (!this.metrics.has(name)) {
+      this.metrics.set(name, new SlidingWindowMetrics(windowSize));
+    }
+    
+    const metric = this.metrics.get(name)!;
+    const stats = metric.addMetric(value);
+    
+    console.log(
+      `${name}: current=${stats.current.toFixed(2)}ms, ` +
+      `mean=${stats.mean.toFixed(2)}±${stats.margin.toFixed(2)}ms ` +
+      `[${stats.min.toFixed(2)}-${stats.max.toFixed(2)}ms] ` +
+      `n=${stats.sampleSize}`
+    );
+  }
+}
+
+const performanceTracker = new PerformanceTracker();
 
 const HF_MODEL_ID_REGEX = /^([a-zA-Z0-9_\-\.]+)\/([a-zA-Z0-9_\-\.]+)$/;
 const HF_MODEL_ID_REGEX_EXPLAIN =
@@ -756,17 +847,22 @@ export class Wllama {
     }
     // maybe reuse KV cache
     if (options.useCache) {
+      const start = performance.now();
       tokens = await this.computeNonCachedTokens(tokens);
+      const duration = performance.now() - start;
+      performanceTracker.track('createCompletion:computeNonCachedTokens', duration);
     } else {
       await this.kvClear();
     }
     // decode/encode tokens
-    await this.samplingAccept(tokens);
     if (this.isEncoderDecoderArchitecture()) {
       await this.encode(tokens);
       await this.decode([this.getDecoderStartToken()], {});
     } else {
+      const now = performance.now();
       await this.decode(tokens, {});
+      const duration = performance.now() - now;
+      performanceTracker.track('createCompletion:decodeTokens', duration);
     }
     let outBuf = new Uint8Array();
     // abort signal
@@ -777,10 +873,13 @@ export class Wllama {
     };
     // predict next tokens
     for (let i = 0; i < (options.nPredict ?? Infinity); i++) {
+      let now = performance.now();
       const sampled = await this.samplingSample();
       if (this.isTokenEOG(sampled.token) || stopTokens.has(sampled.token)) {
         break; // stop token
       }
+      const duration = performance.now() - now;
+      performanceTracker.track('createCompletion:sampleToken', duration);
       // @ts-ignore Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'Uint8Array<ArrayBuffer>'
       outBuf = joinBuffers([outBuf, sampled.piece]);
       if (options.onNewToken) {
@@ -1028,6 +1127,7 @@ export class Wllama {
       if (options?.abortSignal?.aborted) {
         throw new WllamaAbortError();
       }
+      //TOOD: fix respone type
       result = await this.proxy.wllamaAction<GlueMsgDecodeRes>('encode', {
         _name: 'enco_req',
         tokens: batches[i],
@@ -1182,7 +1282,14 @@ export class Wllama {
     if (!result.success) {
       throw new WllamaError('kvRemove unknown error');
     }
-    this.nCachedTokens -= nDiscard;
+
+    if (nDiscard > 0) {
+      this.nCachedTokens -= nDiscard;
+    } else if (nKeep >= 0 && nDiscard < 0) {
+      this.nCachedTokens = nKeep;
+    } else {
+      throw new WllamaError('kvRemove configuration not yet supported');
+    }
   }
 
   /**

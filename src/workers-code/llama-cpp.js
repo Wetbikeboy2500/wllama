@@ -336,21 +336,24 @@ onmessage = async (e) => {
     const argEncodedMsg = args[1];
     try {
       const inputPtr = await wllamaMalloc(argEncodedMsg.byteLength, 0);
+      
+      const unsignedPtr = inputPtr >>> 0; // Convert to unsigned 32-bit integer
       // copy data to wasm heap
       const inputBuffer = new Uint8Array(
         Module.HEAPU8.buffer,
-        inputPtr,
+        unsignedPtr,
         argEncodedMsg.byteLength
       );
       inputBuffer.set(argEncodedMsg, 0);
-      const outputPtr = await wllamaAction(argAction, inputPtr);
+      const outputPtr = await wllamaAction(argAction, unsignedPtr);
       // length of output buffer is written at the first 4 bytes of input buffer
-      const outputLen = new Uint32Array(Module.HEAPU8.buffer, inputPtr, 1)[0];
+      const outputLen = new Uint32Array(Module.HEAPU8.buffer, unsignedPtr, 1)[0];
       // copy the output buffer to JS heap
       const outputBuffer = new Uint8Array(outputLen);
+      const outputPtrUnsigned = outputPtr >>> 0; // Convert output pointer to unsigned
       const outputSrcView = new Uint8Array(
         Module.HEAPU8.buffer,
-        outputPtr,
+        outputPtrUnsigned,
         outputLen
       );
       outputBuffer.set(outputSrcView, 0); // copy it

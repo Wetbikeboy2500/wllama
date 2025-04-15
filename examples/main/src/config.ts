@@ -1,7 +1,7 @@
 // See: https://vitejs.dev/guide/assets#explicit-url-imports
-import wllamaSingle from '@wllama/wllama/src/single-thread/wllama.wasm?url';
-import wllamaMulti from '@wllama/wllama/src/multi-thread/wllama.wasm?url';
 import wllamaPackageJson from '@wllama/wllama/package.json';
+import wllamaMulti from '@wllama/wllama/src/multi-thread/wllama.wasm?url';
+import wllamaSingle from '@wllama/wllama/src/single-thread/wllama.wasm?url';
 import { InferenceParams } from './utils/types';
 
 export const WLLAMA_VERSION = wllamaPackageJson.version;

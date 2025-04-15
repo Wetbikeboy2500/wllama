@@ -1153,6 +1153,7 @@ export interface GlueMsgDecodeRes {
 export interface GlueMsgEncodeReq {
   _name: "enco_req";
   tokens: number[];
+  // n_past?: number;
 }
 
 // struct glue_msg_encode_res

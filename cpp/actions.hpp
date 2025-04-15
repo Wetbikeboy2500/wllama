@@ -543,7 +543,7 @@ glue_msg_sampling_accept_res action_sampling_accept(app_t &app, const char *req_
   llama_tokens tokens_list = std::move(req.tokens.arr);
   for (auto id : tokens_list)
   {
-    wcommon_sampler_accept(app.ctx_sampling, id, false);
+    wcommon_sampler_accept(app.ctx_sampling, id, true);
   }
 
   glue_msg_sampling_accept_res res;
